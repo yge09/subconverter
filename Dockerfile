@@ -1,50 +1,57 @@
-# 阶段一：使用 Ubuntu 编译环境进行源码编译
-FROM ubuntu:22.04 AS builder
+FROM alpine:3.16 AS builder
+LABEL maintainer="feisan"
+ARG THREADS="4"
 
-ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /
+RUN set -xe && \
+    apk add --no-cache --virtual .build-tools git g++ build-base linux-headers cmake python3 && \
+    apk add --no-cache --virtual .build-deps curl-dev rapidjson-dev pcre2-dev yaml-cpp-dev && \
+    git clone --no-checkout https://github.com/ftk/quickjspp.git && \
+    cd quickjspp && \
+    git fetch origin 0c00c48895919fc02da3f191a2da06addeb07f09 && \
+    git checkout 0c00c48895919fc02da3f191a2da06addeb07f09 && \
+    git submodule update --init && \
+    cmake -DCMAKE_BUILD_TYPE=Release . && \
+    make quickjs -j $THREADS && \
+    install -d /usr/lib/quickjs/ && \
+    install -m644 quickjs/libquickjs.a /usr/lib/quickjs/ && \
+    install -d /usr/include/quickjs/ && \
+    install -m644 quickjs/quickjs.h quickjs/quickjs-libc.h /usr/include/quickjs/ && \
+    install -m644 quickjspp.hpp /usr/include && \
+    cd .. && \
+    git clone https://github.com/PerMalmberg/libcron --depth=1 && \
+    cd libcron && \
+    git submodule update --init && \
+    cmake -DCMAKE_BUILD_TYPE=Release . && \
+    make libcron -j $THREADS && \
+    install -m644 libcron/out/Release/liblibcron.a /usr/lib/ && \
+    install -d /usr/include/libcron/ && \
+    install -m644 libcron/include/libcron/* /usr/include/libcron/ && \
+    install -d /usr/include/date/ && \
+    install -m644 libcron/externals/date/include/date/* /usr/include/date/ && \
+    cd .. && \
+    git clone https://github.com/ToruNiina/toml11 --branch="v4.3.0" --depth=1 && \
+    cd toml11 && \
+    cmake -DCMAKE_CXX_STANDARD=11 . && \
+    make install -j $THREADS && \
+    cd ..
 
-# 安装编译所需的依赖工具链和开发库
-RUN apt-get update && apt-get install -y \
-    g++ \
-    cmake \
-    git \
-    libcurl4-openssl-dev \
-    libpcre2-dev \
-    rapidjson-dev \
-    libyaml-cpp-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Copy local source instead of cloning from GitHub
+COPY . /subconverter
+WORKDIR /subconverter
+RUN python3 -m ensurepip && \
+    python3 -m pip install gitpython && \
+    python3 scripts/update_rules.py -c scripts/rules_config.conf && \
+    cmake -DCMAKE_BUILD_TYPE=Release . && \
+    make -j $THREADS
 
-WORKDIR /app
-
-# 将你当前仓库（已包含 VLESS 逻辑）的所有源码复制到容器中
-COPY . /app
-
-# 编译源码
-RUN mkdir build && cd build \
-    && cmake -DCMAKE_BUILD_TYPE=Release .. \
-    && make -j$(nproc)
-
-# 阶段二：精简的运行环境镜像
-FROM debian:bookworm-slim
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# 安装运行所需的动态库
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libpcre3 \
-    libyaml-cpp0.7 \
-    libcurl4 \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# 从编译阶段仅把编译好的主程序和基础配置文件复制过来
-COPY --from=builder /app/build/subconverter /app/subconverter/subconverter
-COPY --from=builder /app/base /app/base
-
-# 暴露默认端口
-EXPOSE 25500
-
-WORKDIR /app/subconverter
-CMD ["./subconverter"]
+# build final image
+FROM alpine:3.16
+RUN apk add --no-cache --virtual subconverter-deps pcre2 libcurl yaml-cpp
+COPY --from=builder /subconverter/subconverter /usr/bin/
+COPY --from=builder /subconverter/base /base/
+ENV TZ=Africa/Abidjan
+RUN ln -sf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+WORKDIR /base
+CMD subconverter
+EXPOSE 25500/tcp
