@@ -30,6 +30,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          no-cache: true # 强制不使用缓存，确保每次都全新编译源码
           tags: |
             yge09/subconverter:latest
             yge09/subconverter:${{ github.sha }}
