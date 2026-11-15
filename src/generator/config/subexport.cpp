@@ -1118,6 +1118,85 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
             if(!x.SNI.empty())
                 proxy += ",sni=" + x.SNI;
             break;
+           case ProxyType::VLESS:
+        {
+            if(surge_ver < 4 && surge_ver != -3)
+                continue;
+
+            std::string vless_uuid = !x.UUID.empty() ? x.UUID : id;
+            if(vless_uuid.empty())
+                continue;
+
+            proxy = "vless, " + hostname + ", " + port + ", username=" + vless_uuid;
+
+            // 1. Flow 流控参数（Vision 流控要求 TLS 或 REALITY，且不支持与 WS/gRPC 同时使用）
+            std::string vless_flow = (x.XTLS == 2) ? "xtls-rprx-vision" : x.Flow;
+            if(!vless_flow.empty() && (transproto.empty() || transproto == "tcp" || transproto == "raw"))
+                proxy += ", flow=" + vless_flow;
+
+            // 2. 安全性配置：区分 REALITY 与标准 TLS
+            bool is_reality = !x.PublicKey.empty();
+            std::string sni_val = !x.SNI.empty() ? x.SNI : (!x.ServerName.empty() ? x.ServerName : host);
+
+            if(is_reality)
+            {
+                // REALITY 模式隐含 TLS，无需输出 tls=true，且 skip-cert-verify 不适用
+                proxy += ", reality-public-key=" + x.PublicKey;
+                if(!x.ShortID.empty())
+                    proxy += ", reality-short-id=" + x.ShortID;
+                if(!sni_val.empty())
+                    proxy += ", sni=" + sni_val;
+            }
+            else if(tlssecure || !vless_flow.empty() || transproto == "grpc")
+            {
+                proxy += ", tls=true";
+                if(!tls13.is_undef())
+                    proxy += ", tls13=" + std::string(tls13 ? "true" : "false");
+                if(!sni_val.empty())
+                    proxy += ", sni=" + sni_val;
+                if(!x.Alpn.empty())
+                    proxy += ", alpn=" + x.Alpn[0];
+                if(!scv.is_undef())
+                    proxy += ", skip-cert-verify=" + scv.get_str();
+                if(!x.Fingerprint.empty())
+                    proxy += ", server-cert-fingerprint-sha256=" + x.Fingerprint;
+            }
+
+            // 3. 传输层协议配置（Surge VLESS 支持 tcp/raw、ws、grpc）
+            switch(hash_(transproto))
+            {
+            case ""_hash:
+            case "tcp"_hash:
+            case "raw"_hash:
+                break;
+            case "ws"_hash:
+                proxy += ", ws=true";
+                if(!path.empty())
+                    proxy += ", ws-path=" + path;
+                else
+                    proxy += ", ws-path=/";
+                if(!host.empty())
+                    headers.push_back("Host:" + host);
+                if(!edge.empty())
+                    headers.push_back("Edge:" + edge);
+                if(!headers.empty())
+                    proxy += ", ws-headers=" + join(headers, "|");
+                break;
+            case "grpc"_hash:
+                proxy += ", grpc=true";
+                if(!x.GRPCServiceName.empty())
+                    proxy += ", grpc-service-name=" + x.GRPCServiceName;
+                if(x.GRPCMode == "multi")
+                    proxy += ", grpc-mode=multi";
+                if(!host.empty())
+                    proxy += ", grpc-authority=" + host;
+                break;
+            default:
+                // Surge VLESS 暂不支持 kcp / quic / httpupgrade / xhttp 等传输层
+                continue;
+            }
+            break;
+        } 
         default:
             continue;
         }
