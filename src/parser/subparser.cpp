@@ -2670,6 +2670,109 @@ bool explodeSurge(std::string surge, std::vector<Proxy> &nodes)
 
             snellConstruct(node, SNELL_DEFAULT_GROUP, remarks, server, port, password, plugin, host, to_int(version, 0), udp, tfo, scv, underlying_proxy);
             break;
+        case "vless"_hash:
+        {
+            if(args.size() < 3)
+                continue;
+            server = trim(args[1]);
+            port = trim(args[2]);
+            if(port == "0")
+                continue;
+
+            std::string sni, flow, public_key, short_id, alpn, mode = "gun", fingerprint;
+            bool vless_tls = false;
+            net = "tcp";
+
+            for(i = 3; i < args.size(); i++)
+            {
+                string_array vArray = split(args[i], "=");
+                if(vArray.size() < 2)
+                    continue;
+                std::string itemName = trim(vArray[0]);
+                std::string itemVal = trim( args[i].substr(args[i].find("=") + 1) );
+                switch(hash_(itemName))
+                {
+                case "username"_hash:
+                    id = itemVal;
+                    break;
+                case "flow"_hash:
+                    flow = itemVal;
+                    break;
+                case "tls"_hash:
+                    vless_tls = (itemVal == "true");
+                    break;
+                case "sni"_hash:
+                    sni = itemVal;
+                    break;
+                case "alpn"_hash:
+                    alpn = itemVal;
+                    break;
+                case "reality-public-key"_hash:
+                    public_key = itemVal;
+                    vless_tls = true;
+                    break;
+                case "reality-short-id"_hash:
+                    short_id = itemVal;
+                    break;
+                case "ws"_hash:
+                    if(itemVal == "true")
+                        net = "ws";
+                    break;
+                case "ws-path"_hash:
+                    path = itemVal;
+                    break;
+                case "ws-headers"_hash:
+                    for(std::string &h : split(itemVal, "|"))
+                    {
+                        if(startsWith(toLower(h), "host:"))
+                            host = trim(h.substr(5));
+                        else if(startsWith(toLower(h), "edge:"))
+                            edge = trim(h.substr(5));
+                    }
+                    break;
+                case "grpc"_hash:
+                    if(itemVal == "true")
+                        net = "grpc";
+                    break;
+                case "grpc-service-name"_hash:
+                    path = itemVal;
+                    break;
+                case "grpc-mode"_hash:
+                    mode = itemVal;
+                    break;
+                case "grpc-authority"_hash:
+                    host = itemVal;
+                    break;
+                case "server-cert-fingerprint-sha256"_hash:
+                    fingerprint = itemVal;
+                    break;
+                case "udp-relay"_hash:
+                    udp = itemVal;
+                    break;
+                case "tfo"_hash:
+                    tfo = itemVal;
+                    break;
+                case "skip-cert-verify"_hash:
+                    scv = itemVal;
+                    break;
+                case "underlying-proxy"_hash:
+                    underlying_proxy = itemVal;
+                    break;
+                default:
+                    break;
+                }
+            }
+
+            if(id.empty())
+                continue;
+
+            vlessConstruct(node, VLESS_DEFAULT_GROUP, remarks, server, port, id, sni, alpn, "", net, mode, host, path, fingerprint, flow, "", public_key, short_id, "", udp, tfo, scv, underlying_proxy);
+            node.TLSSecure = vless_tls;
+            node.Edge = edge;
+            if(!flow.empty())
+                node.FlowSet = true;
+            break;
+        }
         case "wireguard"_hash:
             for (i = 1; i < configs.size(); i++)
             {
