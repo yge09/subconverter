@@ -120,6 +120,7 @@ bool applyMatcher(const std::string &rule, std::string &real_rule, const Proxy &
         {ProxyType::Shadowsocks,  "SS"},
         {ProxyType::ShadowsocksR, "SSR"},
         {ProxyType::VMess,        "VMESS"},
+        {ProxyType::VLESS,        "VLESS"},
         {ProxyType::Trojan,       "TROJAN"},
         {ProxyType::Snell,        "SNELL"},
         {ProxyType::HTTP,         "HTTP"},
@@ -128,8 +129,8 @@ bool applyMatcher(const std::string &rule, std::string &real_rule, const Proxy &
         {ProxyType::WireGuard,    "WIREGUARD"},
         {ProxyType::Hysteria,     "HYSTERIA"},
         {ProxyType::Hysteria2,    "HYSTERIA2"},
-        {ProxyType::TUIC,    "TUIC"},
-        {ProxyType::AnyTLS,    "ANYTLS"}
+        {ProxyType::TUIC,         "TUIC"},
+        {ProxyType::AnyTLS,       "ANYTLS"}
     };
     if(startsWith(rule, "!!GROUP="))
     {
@@ -148,7 +149,7 @@ bool applyMatcher(const std::string &rule, std::string &real_rule, const Proxy &
     {
         regGetMatch(rule, type_regex, 3, 0, &target, &ret_real_rule);
         real_rule = ret_real_rule;
-        if(node.Type == ProxyType::Unknown)
+        if(node.Type == ProxyType::Unknown || types.find(node.Type) == types.end())
             return false;
         return regMatch(types.at(node.Type), target);
     }
@@ -172,7 +173,7 @@ bool applyMatcher(const std::string &rule, std::string &real_rule, const Proxy &
 void processRemark(std::string &remark, const string_array &remarks_list, bool proc_comma = true)
 {
     // Replace every '=' with '-' in the remark string to avoid parse errors from the clients.
-    //     Surge is tested to yield an error when handling '=' in the remark string, 
+    //     Surge is tested to yield an error when handling '=' in the remark string,
     //     not sure if other clients have the same problem.
     std::replace(remark.begin(), remark.end(), '=', '-');
 
@@ -960,7 +961,7 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
             }
             else
             {
-                proxy = "custom, "  + hostname + ", " + port + ", " + method + ", " + password + ", https://github.com/pobizhe/SSEncrypt/raw/master/SSEncrypt.module";
+                proxy = "custom, " + hostname + ", " + port + ", " + method + ", " + password + ", https://github.com/pobizhe/SSEncrypt/raw/master/SSEncrypt.module";
             }
             if(!plugin.empty())
             {
@@ -979,7 +980,7 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
         case ProxyType::VMess:
             if(surge_ver < 4 && surge_ver != -3)
                 continue;
-            proxy = "vmess, " + hostname + ", " + port + ", username=" + id + ", tls=" + (tlssecure ? "true" : "false") +  ", vmess-aead=" + (x.AlterId == 0 ? "true" : "false");
+            proxy = "vmess, " + hostname + ", " + port + ", username=" + id + ", tls=" + (tlssecure ? "true" : "false") + ", vmess-aead=" + (x.AlterId == 0 ? "true" : "false");
             if(tlssecure && !tls13.is_undef())
                 proxy += ", tls13=" + std::string(tls13 ? "true" : "false");
             switch(hash_(transproto))
@@ -1114,12 +1115,12 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
                 continue;
             proxy = "tuic-v5, " + hostname + ", " + port + ", password=" + password;
             if(!x.UUID.empty())
-                    proxy += ",uuid=" + x.UUID;
+                proxy += ",uuid=" + x.UUID;
             if(!x.SNI.empty())
                 proxy += ",sni=" + x.SNI;
             break;
-         case ProxyType::VLESS:
-         {
+        case ProxyType::VLESS:
+        {
             if(surge_ver < 4 && surge_ver != -3)
                 continue;
 
@@ -1146,8 +1147,10 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
 
             // 3. Flow 参数：仅在 RAW(TCP) + (TLS 或 REALITY) 下生效，且仅支持 Vision 流控
             std::string vless_flow = (x.XTLS == 2) ? "xtls-rprx-vision" : x.Flow;
-            if(!vless_flow.empty() && is_raw_tcp && (is_reality || tlssecure))
+            if(!vless_flow.empty())
             {
+                if(!is_raw_tcp || (!is_reality && !tlssecure))
+                    continue; // Vision 流控不支持与 WebSocket/gRPC 或无 TLS 的明文 TCP 组合
                 if(vless_flow == "xtls-rprx-vision" || vless_flow == "xtls-rprx-vision-udp443")
                     proxy += ", flow=" + vless_flow;
                 else
@@ -1273,8 +1276,8 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
             break;
         case ProxyGroupType::SSID:
             group = x.TypeStr() + ",default=" + x.Proxies[0] + ",";
-                group += join(x.Proxies.begin() + 1, x.Proxies.end(), ",");
-                ini.set("{NONAME}", x.Name + " = " + group); //insert order
+            group += join(x.Proxies.begin() + 1, x.Proxies.end(), ",");
+            ini.set("{NONAME}", x.Name + " = " + group); //insert order
             continue;
         default:
             continue;
@@ -1886,7 +1889,7 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
                     proxyStr += ", obfs-host=" + sni;
                 else if(!host.empty())
                     proxyStr += ", obfs-host=" + host;
-                    
+
                 if(!path.empty())
                     proxyStr += ", obfs-uri=" + path;
 
@@ -1903,7 +1906,7 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
                 if(!host.empty())
                     proxyStr += ", obfs-host=" + host;
                 if(!path.empty())
-                        proxyStr += ", obfs-uri=" + path;
+                    proxyStr += ", obfs-uri=" + path;
             }
             else if(transproto == "tcp")
             {
@@ -1932,7 +1935,7 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
                 if(!sni.empty())
                     proxyStr += ", obfs-host=" + sni;
             }
-                
+
             break;
         default:
             continue;
@@ -2463,7 +2466,7 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                 continue;
             group = x.TypeStr() + ",default=" + x.Proxies[0] + ",";
             group += join(x.Proxies.begin() + 1, x.Proxies.end(), ",");
-                ini.set("{NONAME}", x.Name + " = " + group); //insert order
+            ini.set("{NONAME}", x.Name + " = " + group); //insert order
             continue;
         default:
             continue;
@@ -2724,7 +2727,7 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                 {
                     proxy.AddMember("obfs", rapidjson::StringRef(x.OBFS.c_str()), allocator);
                 }
-                
+
                 if (!x.AuthStr.empty())
                 {
                     proxy.AddMember("auth_str", rapidjson::StringRef(x.AuthStr.c_str()), allocator);
@@ -2738,7 +2741,7 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                     proxy.AddMember("recv_window", x.RecvWindow, allocator);
                 if (!x.DisableMtuDiscovery.is_undef())
                     proxy.AddMember("disable_mtu_discovery", x.DisableMtuDiscovery.get(), allocator);
-                
+
                 rapidjson::Value tls(rapidjson::kObjectType);
                 tls.AddMember("enabled", true, allocator);
                 if (!scv.is_undef())
@@ -2922,18 +2925,18 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                     tls.AddMember("reality", reality, allocator);
 
                     rapidjson::Value utls(rapidjson::kObjectType);
-                    utls.AddMember("enabled",true,allocator);
+                    utls.AddMember("enabled", true, allocator);
                     std::array<std::string, 6> fingerprints = {"chrome", "firefox", "safari", "ios", "edge", "qq"};
                     utls.AddMember("fingerprint", rapidjson::Value(fingerprints[rand() % fingerprints.size()].c_str(), allocator), allocator);
                     tls.AddMember("utls", utls, allocator);
                 }
 
                 proxy.AddMember("tls", tls, allocator);
-                
+
                 auto transport = buildSingBoxTransport(x, allocator);
                 if (!transport.ObjectEmpty())
                     proxy.AddMember("transport", transport, allocator);
-                
+
                 break;
             }
 
