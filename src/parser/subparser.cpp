@@ -2199,17 +2199,23 @@ void explodeStdVLESS(std::string vless, Proxy &node) {
         switch(hash_(net))
         {
             case "tcp"_hash:
-            case "ws"_hash:
-            case "h2"_hash:
-                type = getUrlArg(addition, "headerType");
-                host = getUrlArg(addition, strFind(addition,"sni") ? "sni" : "host");
-                path = getUrlArg(addition, "path");
-                break;
-            case "grpc"_hash:
-                host = getUrlArg(addition, "sni");
-                path = getUrlArg(addition, "serviceName");
-                mode = getUrlArg(addition, "mode");
-                break;
+    case "raw"_hash: // 兼容最新 Xray 标准将 tcp 命名为 raw
+        net = "tcp";
+        type = getUrlArg(args, "headerType");
+        host = getUrlArg(args, "host");
+        path = getUrlArg(args, "path");
+        break;
+    case "ws"_hash:
+    case "h2"_hash:
+        type = getUrlArg(args, "headerType");
+        host = getUrlArg(args, "host");
+        path = getUrlArg(args, "path");
+        break;
+    case "grpc"_hash:
+        path = getUrlArg(args, "serviceName");
+        mode = getUrlArg(args, "mode");
+        host = getUrlArg(args, "authority"); // 补全读取 gRPC authority，用于导出 grpc-authority
+        break;
             case "quic"_hash:
                 type = getUrlArg(addition, "headerType");
                 host = getUrlArg(addition, strFind(addition,"sni") ? "sni" : "quicSecurity");
