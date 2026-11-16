@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  REGISTRY_IMAGE: metacubex/subconverter
+  REGISTRY_IMAGE: yge09/subconverter
   GHCR_IMAGE: ghcr.io/metacubex/subconverter
 
 jobs:
