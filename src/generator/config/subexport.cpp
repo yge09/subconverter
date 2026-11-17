@@ -1294,8 +1294,8 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
             // 4. 安全性参数：区分 REALITY 与标准 TLS
             if(is_reality)
             {
-                // REALITY 模式下 sni 必填（优先取 SNI -> ServerName -> Host）
-                std::string reality_sni = !x.SNI.empty() ? x.SNI : (!x.ServerName.empty() ? x.ServerName : host);
+                // REALITY 模式下 sni 必填（优先取 SNI -> ServerName -> Host -> Hostname）
+                std::string reality_sni = !x.SNI.empty() ? x.SNI : (!x.ServerName.empty() ? x.ServerName : (!host.empty() ? host : hostname));
                 if(reality_sni.empty())
                     continue;
 
@@ -2632,8 +2632,25 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                 if(!pluginopts.empty())
                     proxy += "," + replaceAllDistinct(replaceAllDistinct(pluginopts, ";obfs-host=", ",obfs-host="), "obfs=", "obfs-name=");
             }
+            else if(plugin == "shadow-tls")
+            {
+                std::string stls_opts = replaceAllDistinct(pluginopts, ";", "&");
+                std::string stls_pwd = getUrlArg(stls_opts, "password");
+                std::string stls_sni = getUrlArg(stls_opts, "host");
+                if(stls_sni.empty())
+                    stls_sni = getUrlArg(stls_opts, "sni");
+                std::string stls_ver = getUrlArg(stls_opts, "version");
+                if(!stls_pwd.empty())
+                    proxy += ",shadow-tls-password=\"" + stls_pwd + "\"";
+                if(!stls_sni.empty())
+                    proxy += ",shadow-tls-sni=" + stls_sni;
+                if(!stls_ver.empty())
+                    proxy += ",shadow-tls-version=" + stls_ver;
+            }
             else if(!plugin.empty())
                 continue;
+            if(!x.UdpOverTcp.is_undef() && x.UdpOverTcp.get())
+                proxy += ",udp-over-tcp=true";
             break;
         case ProxyType::VMess:
         {
@@ -2663,12 +2680,18 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             if(x.AlterId != 0)
                 proxy += ",alterId=" + aid;
             proxy += ",over-tls=" + std::string(tlssecure ? "true" : "false");
-            if(tlssecure)
+            if(!x.PublicKey.empty())
+            {
+                proxy += ",public-key=\"" + x.PublicKey + "\"";
+                if(!x.ShortID.empty())
+                    proxy += ",short-id=" + x.ShortID;
+            }
+            if(tlssecure || !x.PublicKey.empty())
             {
                 std::string vmess_sni = !x.ServerName.empty() ? x.ServerName : (!x.SNI.empty() ? x.SNI : host);
                 if(!vmess_sni.empty())
                     proxy += ",sni=" + vmess_sni;
-                if(!scv.is_undef())
+                if(x.PublicKey.empty() && !scv.is_undef())
                     proxy += ",skip-cert-verify=" + std::string(scv.get() ? "true" : "false");
                 if(!x.Fingerprint.empty())
                     proxy += ",tls-cert-sha256=" + x.Fingerprint;
@@ -2715,14 +2738,14 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             std::string vless_flow = (x.XTLS == 2) ? "xtls-rprx-vision" : x.Flow;
             if(!vless_flow.empty() && (transproto.empty() || transproto == "tcp" || transproto == "raw"))
             {
-                if(vless_flow == "xtls-rprx-vision")
-                    proxy += ",flow=" + vless_flow;
+                if(vless_flow == "xtls-rprx-vision" || vless_flow == "xtls-rprx-vision-udp443")
+                    proxy += ",flow=xtls-rprx-vision";
                 else
                     continue;
             }
 
             bool is_reality = !x.PublicKey.empty();
-            std::string vless_sni = !x.SNI.empty() ? x.SNI : (!x.ServerName.empty() ? x.ServerName : host);
+            std::string vless_sni = !x.SNI.empty() ? x.SNI : (!x.ServerName.empty() ? x.ServerName : (!host.empty() ? host : hostname));
             if(is_reality)
             {
                 if(vless_sni.empty())
@@ -2752,12 +2775,16 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             proxy = "ShadowsocksR," + hostname + "," + port + "," + method + ",\"" + password + "\",protocol=" + protocol + ",protocol-param=" + protoparam + ",obfs=" + obfs + ",obfs-param=" + obfsparam;
             break;
         case ProxyType::HTTP:
-            proxy = "http," + hostname + "," + port + "," + username + ",\"" + password + "\"";
+            proxy = "http," + hostname + "," + port;
+            if(!username.empty() || !password.empty())
+                proxy += "," + username + ",\"" + password + "\"";
             tfo = tribool();
             udp = tribool();
             break;
         case ProxyType::HTTPS:
-            proxy = "https," + hostname + "," + port + "," + username + ",\"" + password + "\"";
+            proxy = "https," + hostname + "," + port;
+            if(!username.empty() || !password.empty())
+                proxy += "," + username + ",\"" + password + "\"";
             if(!host.empty())
                 proxy += ",sni=" + host;
             else if(!x.SNI.empty())
@@ -2777,6 +2804,7 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                 proxy += ",transport=tcp";
                 break;
             case "ws"_hash:
+            case "http"_hash:
                 proxy += ",transport=ws,path=" + (path.empty() ? "/" : path);
                 if(!host.empty())
                     proxy += ",host=" + host;
@@ -2784,10 +2812,24 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             default:
                 continue;
             }
+            if(!x.PublicKey.empty())
+            {
+                proxy += ",public-key=\"" + x.PublicKey + "\"";
+                if(!x.ShortID.empty())
+                    proxy += ",short-id=" + x.ShortID;
+            }
+            if(!x.Alpn.empty())
+            {
+                std::string alpn_str = join(x.Alpn, ",");
+                if(x.Alpn.size() > 1 || alpn_str.find(",") != std::string::npos)
+                    proxy += ",alpn=\"" + alpn_str + "\"";
+                else
+                    proxy += ",alpn=" + alpn_str;
+            }
             std::string trojan_sni = !x.SNI.empty() ? x.SNI : (!x.ServerName.empty() ? x.ServerName : host);
             if(!trojan_sni.empty())
                 proxy += ",sni=" + trojan_sni;
-            if(!scv.is_undef())
+            if(x.PublicKey.empty() && !scv.is_undef())
                 proxy += ",skip-cert-verify=" + std::string(scv.get() ? "true" : "false");
             if(!x.Fingerprint.empty())
                 proxy += ",tls-cert-sha256=" + x.Fingerprint;
@@ -2844,9 +2886,16 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                 if(x.HopInterval > 0)
                     proxy += ",hop-interval=" + std::to_string(x.HopInterval);
             }
+            if(!x.Alpn.empty())
+            {
+                std::string alpn_str = join(x.Alpn, ",");
+                if(x.Alpn.size() > 1 || alpn_str.find(",") != std::string::npos)
+                    proxy += ",alpn=\"" + alpn_str + "\"";
+                else
+                    proxy += ",alpn=" + alpn_str;
+            }
             if(x.DownSpeed > 0)
                 proxy += ",download-bandwidth=" + std::to_string(x.DownSpeed);
-            tfo = tribool();
             break;
         }
         case ProxyType::AnyTLS:
@@ -2888,6 +2937,12 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
         return output_nodelist;
 
     string_multimap original_groups;
+    if(ini.section_exist("ProxyGroup"))
+    {
+        ini.set_current_section("ProxyGroup");
+        ini.get_items(original_groups);
+        ini.erase_section();
+    }
     ini.set_current_section("Proxy Group");
     ini.get_items(original_groups);
     ini.erase_section();
