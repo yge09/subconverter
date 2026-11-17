@@ -358,6 +358,7 @@ void vlessConstruct(
     commonConstruct(node, ProxyType::VLESS, group, remarks, server, port, udp, tfo, scv, tribool(), underlying_proxy);
     node.UUID = uuid;
     node.SNI = sni;
+    node.FakeType = type;
     node.TransferProtocol = (net.empty() || net == "raw") ? "tcp" : net;
     switch(hash_(net))
     {
