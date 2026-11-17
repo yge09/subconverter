@@ -485,8 +485,6 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
             }
             break;
         case ProxyType::Snell:
-            if (x.SnellVersion >= 4)
-                continue;
             singleproxy["type"] = "snell";
             singleproxy["psk"] = x.Password;
             if(x.SnellVersion != 0)
@@ -1007,6 +1005,22 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
                     if(!pluginopts.empty())
                         proxy += "," + replaceAllDistinct(pluginopts, ";", ",");
                     break;
+                case "shadow-tls"_hash:
+                {
+                    std::string stls_opts = replaceAllDistinct(pluginopts, ";", "&");
+                    std::string stls_pwd = getUrlArg(stls_opts, "password");
+                    std::string stls_sni = getUrlArg(stls_opts, "host");
+                    if(stls_sni.empty())
+                        stls_sni = getUrlArg(stls_opts, "sni");
+                    std::string stls_ver = getUrlArg(stls_opts, "version");
+                    if(!stls_pwd.empty())
+                        proxy += ", shadow-tls-password=" + stls_pwd;
+                    if(!stls_sni.empty())
+                        proxy += ", shadow-tls-sni=" + stls_sni;
+                    if(!stls_ver.empty())
+                        proxy += ", shadow-tls-version=" + stls_ver;
+                    break;
+                }
                 default:
                     continue;
                 }
@@ -1014,7 +1028,7 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
             break;
         case ProxyType::VMess:
         {
-            if(surge_ver < 4 && surge_ver != -3)
+            if(surge_ver < 3 && surge_ver != -3)
                 continue;
             proxy = "vmess, " + hostname + ", " + port + ", username=" + id + ", tls=" + (tlssecure ? "true" : "false") + ", vmess-aead=" + (x.AlterId == 0 ? "true" : "false");
             if(tlssecure)
@@ -1100,7 +1114,7 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
             break;
         case ProxyType::Trojan:
         {
-            if(surge_ver < 4 && surge_ver != -3)
+            if(surge_ver < 3 && surge_ver != -3)
                 continue;
             proxy = "trojan, " + hostname + ", " + port + ", password=" + password;
             if(x.SnellVersion != 0)
@@ -1154,7 +1168,7 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
                 udp = tribool();
             break;
         case ProxyType::WireGuard:
-            if(surge_ver < 4 && surge_ver != -3)
+            if(surge_ver < 3 && surge_ver != -3)
                 continue;
             ss << std::hex << hash_(x.Remark);
             section = ss.str().substr(0, 5);
@@ -1233,7 +1247,7 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
         }
         case ProxyType::AnyTLS:
         {
-            if(surge_ver < 4 && surge_ver != -3)
+            if(surge_ver < 3 && surge_ver != -3)
                 continue;
             proxy = "anytls, " + hostname + ", " + port + ", password=" + password;
             if(!x.SNI.empty())
@@ -1255,7 +1269,7 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
         }
         case ProxyType::VLESS:
         {
-            if(surge_ver < 4 && surge_ver != -3)
+            if(surge_ver < 3 && surge_ver != -3)
                 continue;
 
             // 1. 过滤 Surge VLESS 明确不支持的 VLESS Encryption 与 HTTPUpgrade
@@ -1390,13 +1404,10 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
         return output_nodelist;
 
     string_multimap original_groups;
-    if(ini.section_exist("ProxyGroup"))
-    {
-        ini.set_current_section("ProxyGroup");
-        ini.get_items(original_groups);
-        ini.erase_section();
-    }
-    ini.set_current_section("Proxy Group");
+    std::string surge_group_section = "Proxy Group";
+    if(ini.section_exist("ProxyGroup") && !ini.section_exist("Proxy Group"))
+        surge_group_section = "ProxyGroup";
+    ini.set_current_section(surge_group_section);
     ini.get_items(original_groups);
     ini.erase_section();
     for(const ProxyGroupConfig &x : extra_proxy_group)
@@ -2021,67 +2032,178 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
         scv.define(x.AllowInsecure);
         tls13.define(x.TLS13);
 
+        bool is_reality = !publickey.empty();
+        if(is_reality)
+            tfo = tribool(); // Quantumult X v1.6.0+: Reality ClientHello with post-quantum X25519MLKEM768 > 1500B, TFO must not be enabled
+
         switch(x.Type)
         {
         case ProxyType::VMess:
             if(method == "auto")
-                method = "chacha20-ietf-poly1305";
+                method = "chacha20-poly1305";
             proxyStr = "vmess = " + hostname + ":" + port + ", method=" + method + ", password=" + id;
-            if (x.AlterId != 0)
+            if(x.AlterId != 0)
                 proxyStr += ", aead=false";
-            if(tlssecure && !tls13.is_undef())
-                proxyStr += ", tls13=" + std::string(tls13 ? "true" : "false");
-            if(transproto == "ws")
+            if(tlssecure || is_reality)
             {
-                if(tlssecure)
+                if(transproto == "ws")
+                {
                     proxyStr += ", obfs=wss";
+                    if(!host.empty())
+                        proxyStr += ", obfs-host=" + host;
+                    else if(!sni.empty())
+                        proxyStr += ", obfs-host=" + sni;
+                    if(!path.empty())
+                        proxyStr += ", obfs-uri=" + path;
+                }
                 else
-                    proxyStr += ", obfs=ws";
-                if(!host.empty() || !x.ServerName.empty() || !sni.empty())
-                    proxyStr += ", obfs-host=" + (!host.empty() ? host : (!x.ServerName.empty() ? x.ServerName : sni));
-                proxyStr += ", obfs-uri=" + (path.empty() ? "/" : path);
+                {
+                    proxyStr += ", obfs=over-tls";
+                    if(!sni.empty())
+                        proxyStr += ", obfs-host=" + sni;
+                    else if(!host.empty())
+                        proxyStr += ", obfs-host=" + host;
+                }
+                if(is_reality)
+                {
+                    proxyStr += ", reality-base64-pubkey=" + publickey;
+                    if(!shortid.empty())
+                        proxyStr += ", reality-hex-shortid=" + shortid;
+                }
+                else
+                {
+                    if(!x.Fingerprint.empty())
+                        proxyStr += ", tls-cert-sha256=" + x.Fingerprint;
+                    if(!scv.is_undef())
+                        proxyStr += ", tls-verification=" + std::string(scv.get() ? "false" : "true");
+                }
+                if(tls13.get() && !is_reality)
+                    proxyStr += ", tls13=true";
             }
-            else if(tlssecure)
+            else
             {
-                proxyStr += ", obfs=over-tls";
-                std::string qx_host = !x.ServerName.empty() ? x.ServerName : (!sni.empty() ? sni : host);
-                if(!qx_host.empty())
-                    proxyStr += ", obfs-host=" + qx_host;
+                if(transproto == "ws")
+                    proxyStr += ", obfs=ws, obfs-host=" + host + ", obfs-uri=" + path;
+                else if(transproto == "http")
+                    proxyStr += ", obfs=http, obfs-host=" + host + ", obfs-uri=" + path;
             }
             break;
+        case ProxyType::VLESS:
+        {
+            if(!x.VlessEncryption.empty() && x.VlessEncryption != "none")
+                continue;
+            std::string vless_uuid = !uuid.empty() ? uuid : id;
+            if(vless_uuid.empty())
+                continue;
+            proxyStr = "vless = " + hostname + ":" + port + ", method=none, password=" + vless_uuid;
+            if(tlssecure || is_reality || !flow.empty())
+            {
+                if(transproto == "ws")
+                {
+                    proxyStr += ", obfs=wss";
+                    if(!host.empty())
+                        proxyStr += ", obfs-host=" + host;
+                    else if(!sni.empty())
+                        proxyStr += ", obfs-host=" + sni;
+                    if(!path.empty())
+                        proxyStr += ", obfs-uri=" + path;
+                }
+                else if(transproto == "tcp" || transproto == "raw" || transproto.empty())
+                {
+                    proxyStr += ", obfs=over-tls";
+                    if(!sni.empty())
+                        proxyStr += ", obfs-host=" + sni;
+                    else if(!host.empty())
+                        proxyStr += ", obfs-host=" + host;
+                }
+                else
+                    continue;
+
+                if(!flow.empty() && (transproto == "tcp" || transproto == "raw" || transproto.empty()))
+                    proxyStr += ", vless-flow=" + flow;
+
+                if(is_reality)
+                {
+                    proxyStr += ", reality-base64-pubkey=" + publickey;
+                    if(!shortid.empty())
+                        proxyStr += ", reality-hex-shortid=" + shortid;
+                }
+                else
+                {
+                    if(!x.Fingerprint.empty())
+                        proxyStr += ", tls-cert-sha256=" + x.Fingerprint;
+                    if(!scv.is_undef())
+                        proxyStr += ", tls-verification=" + std::string(scv.get() ? "false" : "true");
+                }
+            }
+            else
+            {
+                if(transproto == "ws")
+                    proxyStr += ", obfs=ws, obfs-host=" + host + ", obfs-uri=" + path;
+                else if(transproto == "http")
+                    proxyStr += ", obfs=http, obfs-host=" + host + ", obfs-uri=" + path;
+                else if(transproto != "tcp" && transproto != "raw" && !transproto.empty())
+                    continue;
+            }
+            break;
+        }
         case ProxyType::Shadowsocks:
             proxyStr = "shadowsocks = " + hostname + ":" + port + ", method=" + method + ", password=" + password;
             if(!plugin.empty())
             {
                 switch(hash_(plugin))
                 {
-                    case "simple-obfs"_hash:
-                    case "obfs-local"_hash:
-                        if(!pluginopts.empty())
-                            proxyStr += ", " + replaceAllDistinct(pluginopts, ";", ", ");
-                        break;
-                    case "v2ray-plugin"_hash:
-                        pluginopts = replaceAllDistinct(pluginopts, ";", "&");
-                        plugin = getUrlArg(pluginopts, "mode") == "websocket" ? "ws" : "";
-                        host = getUrlArg(pluginopts, "host");
-                        path = getUrlArg(pluginopts, "path");
-                        tlssecure = pluginopts.find("tls") != std::string::npos;
-                        if(tlssecure && plugin == "ws")
-                        {
-                            plugin += 's';
-                            if(!tls13.is_undef())
-                                proxyStr += ", tls13=" + std::string(tls13 ? "true" : "false");
-                        }
-                        proxyStr += ", obfs=" + plugin;
-                        if(!host.empty())
-                            proxyStr += ", obfs-host=" + host;
-                        if(!path.empty())
-                            proxyStr += ", obfs-uri=" + path;
-                        break;
-                    default: continue;
+                case "simple-obfs"_hash:
+                case "obfs-local"_hash:
+                    if(!pluginopts.empty())
+                        proxyStr += ", " + replaceAllDistinct(pluginopts, ";", ", ");
+                    break;
+                case "v2ray-plugin"_hash:
+                    pluginopts = replaceAllDistinct(pluginopts, ";", "&");
+                    plugin = getUrlArg(pluginopts, "mode") == "websocket" ? "ws" : "";
+                    host = getUrlArg(pluginopts, "host");
+                    path = getUrlArg(pluginopts, "path");
+                    tlssecure = pluginopts.find("tls") != pluginopts.npos;
+                    if(tlssecure && plugin == "ws")
+                    {
+                        plugin += 's';
+                        if(tls13.get() && !is_reality)
+                            proxyStr += ", tls13=true";
+                    }
+                    proxyStr += ", obfs=" + plugin;
+                    if(!host.empty())
+                        proxyStr += ", obfs-host=" + host;
+                    if(!path.empty())
+                        proxyStr += ", obfs-uri=" + path;
+                    if(tlssecure && is_reality)
+                    {
+                        proxyStr += ", reality-base64-pubkey=" + publickey;
+                        if(!shortid.empty())
+                            proxyStr += ", reality-hex-shortid=" + shortid;
+                    }
+                    break;
+                default:
+                    continue;
                 }
             }
-
+            else if(tlssecure || is_reality)
+            {
+                proxyStr += ", obfs=over-tls";
+                if(!sni.empty())
+                    proxyStr += ", obfs-host=" + sni;
+                else if(!host.empty())
+                    proxyStr += ", obfs-host=" + host;
+                if(is_reality)
+                {
+                    proxyStr += ", reality-base64-pubkey=" + publickey;
+                    if(!shortid.empty())
+                        proxyStr += ", reality-hex-shortid=" + shortid;
+                }
+                else if(!x.Fingerprint.empty())
+                    proxyStr += ", tls-cert-sha256=" + x.Fingerprint;
+            }
+            if(!x.UdpOverTcp.is_undef() && x.UdpOverTcp.get())
+                proxyStr += ", udp-over-tcp=true";
             break;
         case ProxyType::ShadowsocksR:
             proxyStr = "shadowsocks = " + hostname + ":" + port + ", method=" + method + ", password=" + password + ", ssr-protocol=" + protocol;
@@ -2094,130 +2216,126 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
         case ProxyType::HTTP:
         case ProxyType::HTTPS:
             proxyStr = "http = " + hostname + ":" + port + ", username=" + (username.empty() ? "none" : username) + ", password=" + (password.empty() ? "none" : password);
-            if(tlssecure)
+            if(tlssecure || is_reality)
             {
                 proxyStr += ", over-tls=true";
-                if(!tls13.is_undef())
-                    proxyStr += ", tls13=" + std::string(tls13 ? "true" : "false");
-            }
-            else
-            {
-                proxyStr += ", over-tls=false";
-            }
-            break;
-        case ProxyType::Trojan:
-        {
-            proxyStr = "trojan = " + hostname + ":" + port + ", password=" + password;
-            std::string trojan_sni = !sni.empty() ? sni : (!x.ServerName.empty() ? x.ServerName : host);
-            if(transproto == "ws")
-            {
-                proxyStr += std::string(", obfs=") + (tlssecure ? "wss" : "ws");
-                if(!host.empty() || !trojan_sni.empty())
-                    proxyStr += ", obfs-host=" + (!host.empty() ? host : trojan_sni);
-                if(!path.empty())
-                    proxyStr += ", obfs-uri=" + path;
-            }
-            else if(tlssecure)
-            {
-                proxyStr += ", over-tls=true";
-                if(!trojan_sni.empty())
-                    proxyStr += ", tls-host=" + trojan_sni;
-                if(!tls13.is_undef())
-                    proxyStr += ", tls13=" + std::string(tls13 ? "true" : "false");
-            }
-            else
-            {
-                proxyStr += ", over-tls=false";
-            }
-            break;
-        }
-        case ProxyType::SOCKS5:
-            proxyStr = "socks5 = " + hostname + ":" + port;
-            if(!username.empty() && !password.empty())
-            {
-                proxyStr += ", username=" + username + ", password=" + password;
-                if(tlssecure)
-                {
-                    proxyStr += ", over-tls=true, tls-host=" + host;
-                    if(!tls13.is_undef())
-                        proxyStr += ", tls13=" + std::string(tls13 ? "true" : "false");
-                }
-                else
-                {
-                    proxyStr += ", over-tls=false";
-                }
-            }
-            break;
-        case ProxyType::VLESS:
-        {
-            if(!x.VlessEncryption.empty() && x.VlessEncryption != "none")
-                continue;
-            std::string vless_uuid = !uuid.empty() ? uuid : id;
-            if(vless_uuid.empty())
-                continue;
-            std::string vless_sni = !sni.empty() ? sni : (!x.ServerName.empty() ? x.ServerName : host);
-            std::string vless_flow = (x.XTLS == 2) ? "xtls-rprx-vision" : flow;
-            bool is_reality = !publickey.empty();
-            if(is_reality)
-                tlssecure = true;
-
-            method = "none";
-            proxyStr = "vless = " + hostname + ":" + port + ", method=" + method + ", password=" + vless_uuid;
-            if(tlssecure && !tls13.is_undef())
-                proxyStr += ", tls13=" + std::string(tls13 ? "true" : "false");
-            if(transproto == "ws")
-            {
-                proxyStr += std::string(", obfs=") + (tlssecure ? "wss" : "ws");
-                if(is_reality && !vless_sni.empty())
-                    proxyStr += ", obfs-host=" + vless_sni;
+                if(!sni.empty())
+                    proxyStr += ", tls-host=" + sni;
                 else if(!host.empty())
-                    proxyStr += ", obfs-host=" + host;
-                else if(!vless_sni.empty())
-                    proxyStr += ", obfs-host=" + vless_sni;
-
-                if(!path.empty())
-                    proxyStr += ", obfs-uri=" + path;
-
-                if(is_reality && !vless_sni.empty())
+                    proxyStr += ", tls-host=" + host;
+                if(is_reality)
                 {
                     proxyStr += ", reality-base64-pubkey=" + publickey;
                     if(!shortid.empty())
                         proxyStr += ", reality-hex-shortid=" + shortid;
                 }
-            }
-            else if(transproto == "http")
-            {
-                proxyStr += ", obfs=http";
-                if(!host.empty())
-                    proxyStr += ", obfs-host=" + host;
-                if(!path.empty())
-                    proxyStr += ", obfs-uri=" + path;
-            }
-            else if(transproto.empty() || transproto == "tcp" || transproto == "raw")
-            {
-                if(tlssecure)
+                else
                 {
-                    proxyStr += ", obfs=over-tls";
-                    if(!vless_sni.empty())
-                        proxyStr += ", obfs-host=" + vless_sni;
+                    if(!x.Fingerprint.empty())
+                        proxyStr += ", tls-cert-sha256=" + x.Fingerprint;
+                    if(!scv.is_undef())
+                        proxyStr += ", tls-verification=" + std::string(scv.get() ? "false" : "true");
+                }
+                if(tls13.get() && !is_reality)
+                    proxyStr += ", tls13=true";
+            }
+            else
+                proxyStr += ", over-tls=false";
+            break;
+        case ProxyType::Trojan:
+            proxyStr = "trojan = " + hostname + ":" + port + ", password=" + password;
+            if(tlssecure || is_reality)
+            {
+                if(transproto == "ws")
+                {
+                    proxyStr += ", obfs=wss";
+                    if(!host.empty())
+                        proxyStr += ", obfs-host=" + host;
+                    else if(!sni.empty())
+                        proxyStr += ", obfs-host=" + sni;
+                    if(!path.empty())
+                        proxyStr += ", obfs-uri=" + path;
+                }
+                else
+                {
+                    proxyStr += ", over-tls=true";
+                    if(!sni.empty())
+                        proxyStr += ", tls-host=" + sni;
+                    else if(!host.empty())
+                        proxyStr += ", tls-host=" + host;
+                }
+                if(is_reality)
+                {
+                    proxyStr += ", reality-base64-pubkey=" + publickey;
+                    if(!shortid.empty())
+                        proxyStr += ", reality-hex-shortid=" + shortid;
+                }
+                else
+                {
+                    if(!x.Fingerprint.empty())
+                        proxyStr += ", tls-cert-sha256=" + x.Fingerprint;
+                    if(!scv.is_undef())
+                        proxyStr += ", tls-verification=" + std::string(scv.get() ? "false" : "true");
+                }
+                if(tls13.get() && !is_reality)
+                    proxyStr += ", tls13=true";
+            }
+            else
+            {
+                if(transproto == "ws")
+                    proxyStr += ", obfs=ws, obfs-host=" + host + ", obfs-uri=" + path;
+                else
+                    proxyStr += ", over-tls=false";
+            }
+            break;
+        case ProxyType::AnyTLS:
+            proxyStr = "anytls = " + hostname + ":" + port + ", password=" + password + ", over-tls=true";
+            if(!sni.empty())
+                proxyStr += ", tls-host=" + sni;
+            else if(!host.empty())
+                proxyStr += ", tls-host=" + host;
+            if(is_reality)
+            {
+                proxyStr += ", reality-base64-pubkey=" + publickey;
+                if(!shortid.empty())
+                    proxyStr += ", reality-hex-shortid=" + shortid;
+            }
+            else
+            {
+                if(!x.Fingerprint.empty())
+                    proxyStr += ", tls-cert-sha256=" + x.Fingerprint;
+                if(!scv.is_undef())
+                    proxyStr += ", tls-verification=" + std::string(scv.get() ? "false" : "true");
+            }
+            break;
+        case ProxyType::SOCKS5:
+            proxyStr = "socks5 = " + hostname + ":" + port;
+            if(!username.empty() && !password.empty())
+            {
+                proxyStr += ", username=" + username + ", password=" + password;
+                if(tlssecure || is_reality)
+                {
+                    proxyStr += ", over-tls=true";
+                    if(!sni.empty())
+                        proxyStr += ", tls-host=" + sni;
+                    else if(!host.empty())
+                        proxyStr += ", tls-host=" + host;
                     if(is_reality)
                     {
-                        if(vless_sni.empty())
-                            continue;
                         proxyStr += ", reality-base64-pubkey=" + publickey;
                         if(!shortid.empty())
                             proxyStr += ", reality-hex-shortid=" + shortid;
                     }
-                    if(!vless_flow.empty())
-                        proxyStr += ", vless-flow=" + vless_flow;
+                    else
+                    {
+                        if(!x.Fingerprint.empty())
+                            proxyStr += ", tls-cert-sha256=" + x.Fingerprint;
+                        if(!scv.is_undef())
+                            proxyStr += ", tls-verification=" + std::string(scv.get() ? "false" : "true");
+                    }
                 }
             }
-            else
-            {
-                continue;
-            }
             break;
-        }
         default:
             continue;
         }
@@ -2225,8 +2343,6 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
             proxyStr += ", fast-open=" + tfo.get_str();
         if(!udp.is_undef())
             proxyStr += ", udp-relay=" + udp.get_str();
-        if(tlssecure && publickey.empty() && !scv.is_undef() && (x.Type != ProxyType::Shadowsocks && x.Type != ProxyType::ShadowsocksR))
-            proxyStr += ", tls-verification=" + scv.reverse().get_str();
         proxyStr += ", tag=" + x.Remark;
 
         ini.set("{NONAME}", proxyStr);
@@ -2264,7 +2380,7 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
             break;
         case ProxyGroupType::SSID:
             type = "ssid";
-            for(const auto & proxy : x.Proxies)
+            for(const auto &proxy : x.Proxies)
                 filtered_nodelist.emplace_back(replaceAllDistinct(proxy, "=", ":"));
             break;
         default:
@@ -2582,18 +2698,22 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
 
     ini.store_any_line = true;
     ini.add_direct_save_section("General");
+    ini.add_direct_save_section("DNS");
     ini.add_direct_save_section("Host");
     ini.add_direct_save_section("Rule");
     ini.add_direct_save_section("Remote Proxy");
     ini.add_direct_save_section("Remote Rule");
     ini.add_direct_save_section("Remote Filter");
+    ini.add_direct_save_section("Proxy Chain");
     ini.add_direct_save_section("Rewrite");
     ini.add_direct_save_section("URL Rewrite");
     ini.add_direct_save_section("Header Rewrite");
+    ini.add_direct_save_section("Body Rewrite");
     ini.add_direct_save_section("Script");
     ini.add_direct_save_section("Plugin");
     ini.add_direct_save_section("MITM");
     ini.add_direct_save_section("MitM");
+    ini.add_direct_save_section("Mitm");
     if(ini.parse(base_conf) != INIREADER_EXCEPTION_NONE && !ext.nodelist)
     {
         writeLog(0, "Loon base loader failed with error: " + ini.get_last_error(), LOG_LEVEL_ERROR);
@@ -2742,6 +2862,21 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                     proxy += ",flow=xtls-rprx-vision";
                 else
                     continue;
+            }
+            if(plugin == "shadow-tls")
+            {
+                std::string stls_opts = replaceAllDistinct(pluginopts, ";", "&");
+                std::string stls_pwd = getUrlArg(stls_opts, "password");
+                std::string stls_sni = getUrlArg(stls_opts, "host");
+                if(stls_sni.empty())
+                    stls_sni = getUrlArg(stls_opts, "sni");
+                std::string stls_ver = getUrlArg(stls_opts, "version");
+                if(!stls_pwd.empty())
+                    proxy += ",shadow-tls-password="" + stls_pwd + """;
+                if(!stls_sni.empty())
+                    proxy += ",shadow-tls-sni=" + stls_sni;
+                if(!stls_ver.empty())
+                    proxy += ",shadow-tls-version=" + stls_ver;
             }
 
             bool is_reality = !x.PublicKey.empty();
@@ -2899,19 +3034,31 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             break;
         }
         case ProxyType::AnyTLS:
-            proxy = "AnyTLS," + hostname + "," + port + ",\"" + password + "\"";
+            proxy = "AnyTLS," + hostname + "," + port + ","" + password + """;
             if(!x.SNI.empty())
                 proxy += ",sni=" + x.SNI;
-            if(!scv.is_undef())
+            else if(!host.empty())
+                proxy += ",sni=" + host;
+            if(!x.Alpn.empty())
+            {
+                std::string alpn_str = join(x.Alpn, ",");
+                if(x.Alpn.size() > 1 || alpn_str.find(",") != std::string::npos)
+                    proxy += ",alpn="" + alpn_str + """;
+                else
+                    proxy += ",alpn=" + alpn_str;
+            }
+            if(x.PublicKey.empty() && !scv.is_undef())
                 proxy += ",skip-cert-verify=" + std::string(scv.get() ? "true" : "false");
             if(!x.Fingerprint.empty())
                 proxy += ",tls-cert-sha256=" + x.Fingerprint;
             if(!x.PublicKey.empty())
-                proxy += ",public-key=\"" + x.PublicKey + "\"";
+                proxy += ",public-key="" + x.PublicKey + """;
             if(!x.ShortID.empty())
                 proxy += ",short-id=" + x.ShortID;
             if(x.IdleSessionTimeout > 0)
                 proxy += ",idle-session-timeout=" + std::to_string(x.IdleSessionTimeout);
+            if(x.MaxOpenStreams > 0)
+                proxy += ",max-stream-count=" + std::to_string(x.MaxOpenStreams);
             tfo = tribool();
             break;
         default:
@@ -2937,13 +3084,10 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
         return output_nodelist;
 
     string_multimap original_groups;
-    if(ini.section_exist("ProxyGroup"))
-    {
-        ini.set_current_section("ProxyGroup");
-        ini.get_items(original_groups);
-        ini.erase_section();
-    }
-    ini.set_current_section("Proxy Group");
+    std::string loon_group_section = "Proxy Group";
+    if(ini.section_exist("ProxyGroup") && !ini.section_exist("Proxy Group"))
+        loon_group_section = "ProxyGroup";
+    ini.set_current_section(loon_group_section);
     ini.get_items(original_groups);
     ini.erase_section();
 
