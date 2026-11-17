@@ -2830,12 +2830,20 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                 continue;
 
             proxy = "VLESS," + hostname + "," + port + ",\"" + vless_uuid + "\"";
+            tfo = tribool();
             switch(hash_(transproto))
             {
             case ""_hash:
             case "tcp"_hash:
             case "raw"_hash:
-                proxy += ",transport=tcp";
+                if(x.FakeType == "http")
+                {
+                    proxy += ",transport=http,path=" + (path.empty() ? "/" : path);
+                    if(!host.empty())
+                        proxy += ",host=" + host;
+                }
+                else
+                    proxy += ",transport=tcp";
                 break;
             case "ws"_hash:
                 if(!x.PublicKey.empty())
@@ -2872,7 +2880,7 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                     stls_sni = getUrlArg(stls_opts, "sni");
                 std::string stls_ver = getUrlArg(stls_opts, "version");
                 if(!stls_pwd.empty())
-                    proxy += ",shadow-tls-password="" + stls_pwd + """;
+                    proxy += ",shadow-tls-password=\"" + stls_pwd + "\"";
                 if(!stls_sni.empty())
                     proxy += ",shadow-tls-sni=" + stls_sni;
                 if(!stls_ver.empty())
@@ -3034,7 +3042,7 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             break;
         }
         case ProxyType::AnyTLS:
-            proxy = "AnyTLS," + hostname + "," + port + ","" + password + """;
+            proxy = "AnyTLS," + hostname + "," + port + ",\"" + password + "\"";
             if(!x.SNI.empty())
                 proxy += ",sni=" + x.SNI;
             else if(!host.empty())
@@ -3043,7 +3051,7 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             {
                 std::string alpn_str = join(x.Alpn, ",");
                 if(x.Alpn.size() > 1 || alpn_str.find(",") != std::string::npos)
-                    proxy += ",alpn="" + alpn_str + """;
+                    proxy += ",alpn=\"" + alpn_str + "\"";
                 else
                     proxy += ",alpn=" + alpn_str;
             }
@@ -3052,7 +3060,7 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             if(!x.Fingerprint.empty())
                 proxy += ",tls-cert-sha256=" + x.Fingerprint;
             if(!x.PublicKey.empty())
-                proxy += ",public-key="" + x.PublicKey + """;
+                proxy += ",public-key=\"" + x.PublicKey + "\"";
             if(!x.ShortID.empty())
                 proxy += ",short-id=" + x.ShortID;
             if(x.IdleSessionTimeout > 0)
