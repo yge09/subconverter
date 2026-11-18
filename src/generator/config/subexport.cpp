@@ -28,8 +28,8 @@ extern string_array ss_ciphers, ssr_ciphers;
 const string_array clashr_protocols = {"origin", "auth_sha1_v4", "auth_aes128_md5", "auth_aes128_sha1", "auth_chain_a", "auth_chain_b"};
 const string_array clashr_obfs = {"plain", "http_simple", "http_post", "random_head", "tls1.2_ticket_auth", "tls1.2_ticket_fastauth"};
 const string_array clash_ssr_ciphers = {"rc4-md5", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr", "aes-128-cfb", "aes-192-cfb", "aes-256-cfb", "chacha20-ietf", "xchacha20", "none"};
-const string_array loon_ciphers = {"rc4", "rc4-md5", "aes-128-cfb", "aes-192-cfb", "aes-256-cfb", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr", "bf-cfb", "camellia-128-cfb", "camellia-192-cfb", "camellia-256-cfb", "salsa20", "chacha20", "chacha20-ietf", "aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm"};
-const string_array loon_vmess_ciphers = {"auto", "aes-128-gcm", "chacha20-poly1305", "none", "zero"};
+const string_array loon_ciphers = {"rc4", "rc4-md5", "aes-128-cfb", "aes-192-cfb", "aes-256-cfb", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr", "bf-cfb", "camellia-128-cfb", "camellia-192-cfb", "camellia-256-cfb", "cast5-cfb", "des-cfb", "idea-cfb", "rc2-cfb", "seed-cfb", "salsa20", "chacha20", "chacha20-ietf", "aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm"};
+const string_array loon_vmess_ciphers = {"auto", "aes-128-cfb", "aes-128-gcm", "chacha20-poly1305", "chacha20-ietf-poly1305", "none", "zero"};
 
 std::string vmessLinkConstruct(const std::string &remarks, const std::string &add, const std::string &port, const std::string &type, const std::string &id, const std::string &aid, const std::string &net, const std::string &path, const std::string &host, const std::string &tls)
 {
@@ -2732,8 +2732,10 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
         std::string port = std::to_string(x.Port), aid = std::to_string(x.AlterId);
         bool &tlssecure = x.TLSSecure;
 
-        tribool scv = ext.skip_cert_verify;
+        tribool scv = ext.skip_cert_verify, udp = ext.udp, tfo = ext.tfo;
         scv.define(x.AllowInsecure);
+        udp.define(x.UDP);
+        tfo.define(x.TCPFastOpen);
 
         std::string proxy;
 
@@ -2748,66 +2750,204 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                 if(!pluginopts.empty())
                     proxy += "," + replaceAllDistinct(replaceAllDistinct(pluginopts, ";obfs-host=", ","), "obfs=", "obfs-name=");
             }
+            else if(plugin == "shadow-tls")
+            {
+                std::string stls_opts = replaceAllDistinct(pluginopts, ";", "&");
+                std::string stls_pwd = getUrlArg(stls_opts, "password");
+                std::string stls_sni = getUrlArg(stls_opts, "host");
+                if(stls_sni.empty())
+                    stls_sni = getUrlArg(stls_opts, "sni");
+                std::string stls_ver = getUrlArg(stls_opts, "version");
+                if(!stls_pwd.empty())
+                    proxy += ",shadow-tls-password=\"" + stls_pwd + "\"";
+                if(!stls_sni.empty())
+                    proxy += ",shadow-tls-sni=" + stls_sni;
+                if(!stls_ver.empty())
+                    proxy += ",shadow-tls-version=" + stls_ver;
+            }
             else if(!plugin.empty())
                 continue;
+            if(!x.UdpOverTcp.is_undef() && x.UdpOverTcp.get())
+                proxy += ",udp-over-tcp=true";
             break;
         case ProxyType::VMess:
+        {
             if(std::find(loon_vmess_ciphers.begin(), loon_vmess_ciphers.end(), method) == loon_vmess_ciphers.end())
                 continue;
-            if(method == "auto")
+            if(method == "auto" || method == "chacha20-poly1305")
                 method = "chacha20-ietf-poly1305";
+            else if(method == "zero")
+                method = "none";
 
-            proxy = "VMess," + hostname + "," + port + "," + method + ",\"" + id + "\",over-tls=" + (tlssecure ? "true" : "false");
-            if(tlssecure)
-                proxy += ",tls-name=" + host;
+            bool vmess_tls = tlssecure || !x.PublicKey.empty();
+            proxy = "VMess," + hostname + "," + port + "," + method + ",\"" + id + "\",over-tls=" + (vmess_tls ? "true" : "false");
+            if(vmess_tls)
+            {
+                std::string vmess_sni = !x.SNI.empty() ? x.SNI : (!x.ServerName.empty() ? x.ServerName : host);
+                if(!vmess_sni.empty())
+                    proxy += ",tls-name=" + vmess_sni;
+            }
             switch(hash_(transproto))
             {
+            case ""_hash:
             case "tcp"_hash:
+            case "raw"_hash:
                 proxy += ",transport=tcp";
                 break;
             case "ws"_hash:
-                proxy += ",transport=ws,path=" + path + ",host=" + host;
+                proxy += ",transport=ws,path=" + (path.empty() ? "/" : path) + (!host.empty() ? ",host=" + host : "");
                 break;
             case "http"_hash:
-                proxy += ",transport=http,path=" + path + ",host=" + host;
+                proxy += ",transport=http,path=" + (path.empty() ? "/" : path) + (!host.empty() ? ",host=" + host : "");
                 break;
             default:
                 continue;
             }
-            if(!scv.is_undef())
+            if(x.AlterId != 0)
+                proxy += ",alterId=" + aid;
+            if(!x.PublicKey.empty())
+            {
+                proxy += ",public-key=\"" + x.PublicKey + "\"";
+                if(!x.ShortID.empty())
+                    proxy += ",short-id=" + x.ShortID;
+            }
+            else if(vmess_tls && !scv.is_undef())
                 proxy += ",skip-cert-verify=" + std::string(scv.get() ? "true" : "false");
+            tfo = tribool();
             break;
+        }
+        case ProxyType::VLESS:
+        {
+            if(!x.VlessEncryption.empty() && x.VlessEncryption != "none")
+                continue;
+            if(!x.V2rayHttpUpgrade.is_undef() && x.V2rayHttpUpgrade.get())
+                continue;
+
+            std::string vless_uuid = !x.UUID.empty() ? x.UUID : id;
+            if(vless_uuid.empty())
+                continue;
+
+            proxy = "VLESS," + hostname + "," + port + ",\"" + vless_uuid + "\"";
+            switch(hash_(transproto))
+            {
+            case ""_hash:
+            case "tcp"_hash:
+            case "raw"_hash:
+                if(x.FakeType == "http")
+                {
+                    proxy += ",transport=http,path=" + (path.empty() ? "/" : path);
+                    if(!host.empty())
+                        proxy += ",host=" + host;
+                }
+                else
+                    proxy += ",transport=tcp";
+                break;
+            case "ws"_hash:
+                if(!x.PublicKey.empty())
+                    continue;
+                proxy += ",transport=ws,path=" + (path.empty() ? "/" : path);
+                if(!host.empty())
+                    proxy += ",host=" + host;
+                break;
+            case "http"_hash:
+                if(!x.PublicKey.empty())
+                    continue;
+                proxy += ",transport=http,path=" + (path.empty() ? "/" : path);
+                if(!host.empty())
+                    proxy += ",host=" + host;
+                break;
+            default:
+                continue;
+            }
+
+            std::string vless_flow = (x.XTLS == 2) ? "xtls-rprx-vision" : x.Flow;
+            if(vless_flow == "none")
+                vless_flow.clear();
+            if(!vless_flow.empty() && (transproto.empty() || transproto == "tcp" || transproto == "raw"))
+            {
+                if(vless_flow == "xtls-rprx-vision" || vless_flow == "xtls-rprx-vision-udp443")
+                    proxy += ",flow=xtls-rprx-vision";
+                else
+                    continue;
+            }
+
+            bool is_reality = !x.PublicKey.empty();
+            std::string vless_sni = !x.SNI.empty() ? x.SNI : (!x.ServerName.empty() ? x.ServerName : host);
+            if(is_reality)
+            {
+                if(vless_sni.empty())
+                    vless_sni = hostname;
+                proxy += ",public-key=\"" + x.PublicKey + "\"";
+                if(!x.ShortID.empty())
+                    proxy += ",short-id=" + x.ShortID;
+                proxy += ",over-tls=true,sni=" + vless_sni;
+            }
+            else if(tlssecure || !vless_flow.empty())
+            {
+                proxy += ",over-tls=true";
+                if(!vless_sni.empty())
+                    proxy += ",sni=" + vless_sni;
+                if(!scv.is_undef())
+                    proxy += ",skip-cert-verify=" + std::string(scv.get() ? "true" : "false");
+                if(!x.Fingerprint.empty())
+                    proxy += ",tls-cert-sha256=" + x.Fingerprint;
+            }
+            else
+            {
+                proxy += ",over-tls=false";
+            }
+            tfo = tribool();
+            break;
+        }
         case ProxyType::ShadowsocksR:
             proxy = "ShadowsocksR," + hostname + "," + port + "," + method + ",\"" + password + "\",protocol=" + protocol + ",protocol-param=" + protoparam + ",obfs=" + obfs + ",obfs-param=" + obfsparam;
             break;
         case ProxyType::HTTP:
             proxy = "http," + hostname + "," + port + "," + username + ",\"" + password + "\"";
+            tfo = tribool();
+            udp = tribool();
             break;
         case ProxyType::HTTPS:
             proxy = "https," + hostname + "," + port + "," + username + ",\"" + password + "\"";
             if(!host.empty())
                 proxy += ",tls-name=" + host;
+            else if(!x.SNI.empty())
+                proxy += ",tls-name=" + x.SNI;
             if(!scv.is_undef())
                 proxy += ",skip-cert-verify=" + std::string(scv.get() ? "true" : "false");
+            tfo = tribool();
+            udp = tribool();
             break;
         case ProxyType::Trojan:
+        {
             proxy = "trojan," + hostname + "," + port + ",\"" + password + "\"";
-            if(!host.empty())
-                proxy += ",tls-name=" + host;
+            std::string trojan_sni = !x.SNI.empty() ? x.SNI : (!x.ServerName.empty() ? x.ServerName : host);
+            if(!trojan_sni.empty())
+                proxy += ",tls-name=" + trojan_sni;
             switch(hash_(transproto))
             {
+            case ""_hash:
             case "tcp"_hash:
+            case "raw"_hash:
                 proxy += ",transport=tcp";
                 break;
             case "ws"_hash:
-                proxy += ",transport=ws,path=" + path + ",host=" + host;
+            case "http"_hash:
+                proxy += ",transport=ws,path=" + (path.empty() ? "/" : path) + (!host.empty() ? ",host=" + host : "");
                 break;
             default:
                 continue;
             }
-            if(!scv.is_undef())
+            if(!x.PublicKey.empty())
+            {
+                proxy += ",public-key=\"" + x.PublicKey + "\"";
+                if(!x.ShortID.empty())
+                    proxy += ",short-id=" + x.ShortID;
+            }
+            else if(!scv.is_undef())
                 proxy += ",skip-cert-verify=" + std::string(scv.get() ? "true" : "false");
             break;
+        }
         case ProxyType::SOCKS5:
             proxy = "socks5," + hostname + "," + port;
             if(!username.empty() && !password.empty())
@@ -2820,6 +2960,7 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                 if(!scv.is_undef())
                     proxy += ",skip-cert-verify=" + std::string(scv.get() ? "true" : "false");
             }
+            tfo = tribool();
             break;
         case ProxyType::WireGuard:
             proxy = "WireGuard, interface-ip=" + x.SelfIP;
@@ -2838,9 +2979,11 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             if(x.KeepAlive > 0)
                 proxy += ", keepalive=" + std::to_string(x.KeepAlive);
             proxy += ", peers=[{" + generatePeer(x, true) + "}]";
+            tfo = tribool();
             break;
         case ProxyType::Hysteria2:
-            proxy = "hysteria2," + hostname + "," + port + ",\"" + password + "\"";
+        {
+            proxy = "Hysteria2," + hostname + "," + port + ",\"" + password + "\"";
             if(!x.SNI.empty())
                 proxy += ",sni=" + x.SNI;
             if(!scv.is_undef())
@@ -2849,20 +2992,48 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                 proxy += ",tls-cert-sha256=" + x.Fingerprint;
             if(!x.OBFSParam.empty())
                 proxy += ",salamander-password=" + x.OBFSParam;
-            if(x.DownSpeed)
+            std::string hy2_ports = !x.Mport.empty() ? x.Mport : x.Ports;
+            if(!hy2_ports.empty() && hy2_ports != port)
+            {
+                proxy += ",server-ports=\"" + replaceAllDistinct(hy2_ports, "-", ":") + "\"";
+                if(x.HopInterval > 0)
+                    proxy += ",hop-interval=" + std::to_string(x.HopInterval);
+            }
+            if(x.DownSpeed > 0)
                 proxy += ",download-bandwidth=" + std::to_string(x.DownSpeed);
-            if(!x.UpSpeed)
-                proxy += ",upload-bandwidth=" + std::to_string(x.UpSpeed);
             if(!x.Alpn.empty())
                 proxy += ",alpn=" + x.Alpn[0];
+            break;
+        }
+        case ProxyType::AnyTLS:
+            proxy = "AnyTLS," + hostname + "," + port + ",\"" + password + "\"";
+            if(!x.SNI.empty())
+                proxy += ",sni=" + x.SNI;
+            else if(!host.empty())
+                proxy += ",sni=" + host;
+            if(!x.PublicKey.empty())
+            {
+                proxy += ",public-key=\"" + x.PublicKey + "\"";
+                if(!x.ShortID.empty())
+                    proxy += ",short-id=" + x.ShortID;
+            }
+            else if(!scv.is_undef())
+                proxy += ",skip-cert-verify=" + std::string(scv.get() ? "true" : "false");
+            if(!x.Fingerprint.empty())
+                proxy += ",tls-cert-sha256=" + x.Fingerprint;
+            if(x.IdleSessionTimeout > 0)
+                proxy += ",idle-session-timeout=" + std::to_string(x.IdleSessionTimeout);
+            if(x.MaxOpenStreams > 0)
+                proxy += ",max-stream-count=" + std::to_string(x.MaxOpenStreams);
+            tfo = tribool();
             break;
         default:
             continue;
         }
 
-        if(x.TCPFastOpen)
+        if(tfo)
             proxy += ",fast-open=true";
-        if(x.UDP)
+        if(udp)
             proxy += ",udp=true";
 
         if(ext.nodelist)
@@ -2891,6 +3062,7 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
         switch(x.Type)
         {
         case ProxyGroupType::Select:
+        case ProxyGroupType::Smart:
         case ProxyGroupType::LoadBalance:
         case ProxyGroupType::URLTest:
         case ProxyGroupType::Fallback:
@@ -2927,7 +3099,8 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             }
         }
 
-        group = x.TypeStr() + ",";
+        std::string group_type = (x.Type == ProxyGroupType::Smart) ? "url-test" : x.TypeStr();
+        group = group_type + ",";
         group += join(filtered_nodelist, ",");
         if(x.Type != ProxyGroupType::Select)
         {
@@ -2938,7 +3111,7 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                 if(x.Timeout > 0)
                     group += ",max-timeout=" + std::to_string(x.Timeout);
             }
-            if(x.Type == ProxyGroupType::URLTest)
+            if(x.Type == ProxyGroupType::URLTest || x.Type == ProxyGroupType::Smart)
             {
                 if(x.Tolerance > 0)
                     group += ",tolerance=" + std::to_string(x.Tolerance);
