@@ -1,5 +1,12 @@
 name: Publish Docker Image
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '自定义镜像版本号标签 (例如 2.0 或 v2.0.0，留空则仅推送 latest)'
+        required: false
+        default: ''
+        type: string
   push:
     branches: [ master ]
     tags:
@@ -52,8 +59,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=raw,value=latest
       - name: Docker login
         uses: docker/login-action@v3
         with:
@@ -61,7 +69,6 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Get commit SHA
-        if: github.ref == 'refs/heads/master'
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
@@ -124,8 +131,9 @@ jobs:
         with:
           images: ${{ env.GHCR_IMAGE }}
           tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=raw,value=latest
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -134,7 +142,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get commit SHA
-        if: github.ref == 'refs/heads/master'
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
@@ -184,8 +191,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=raw,value=latest
       - name: Docker login
         uses: docker/login-action@v3
         with:
@@ -221,8 +229,9 @@ jobs:
         with:
           images: ${{ env.GHCR_IMAGE }}
           tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=raw,value=latest
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
