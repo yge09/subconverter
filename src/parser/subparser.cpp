@@ -356,7 +356,8 @@ void vlessConstruct(
     const std::string &underlying_proxy
 ) {
     commonConstruct(node, ProxyType::VLESS, group, remarks, server, port, udp, tfo, scv, tribool(), underlying_proxy);
-    node.UUID = uuid;
+    node.UUID = trim(uuid);
+    node.UserId = node.UUID;
     node.SNI = sni;
     node.FakeType = type;
     node.TransferProtocol = (net.empty() || net == "raw") ? "tcp" : net;
@@ -644,12 +645,12 @@ void explodeSS(std::string ss, Proxy &node)
     {
         if(regGetMatch(ss, "(\\S+?)@(\\S+):(\\d+)", 4, 0, &secret, &server, &port))
             return;
-        std::string decoded_secret = urlDecode(secret);
-        if(strFind(decoded_secret, ":") && regGetMatch(decoded_secret, "^([^:]+):(.*)$", 3, 0, &method, &password) == 0)
+        std::string plain_secret = urlDecode(replaceAllDistinct(secret, "+", "%2B"));
+        if(strFind(plain_secret, ":") && regGetMatch(plain_secret, "^([^:]+):(.*)$", 3, 0, &method, &password) == 0 && std::find(ss_ciphers.begin(), ss_ciphers.end(), method) != ss_ciphers.end())
         {
-            // SIP002 / SS2022 plain method:password format
+            // SIP002 / SS2022 plain method:password format (preserving '+' in base64 keys)
         }
-        else if(regGetMatch(urlSafeBase64Decode(decoded_secret), "^([^:]+):(.*)$", 3, 0, &method, &password))
+        else if(regGetMatch(urlSafeBase64Decode(secret), "(.+?):(.*)", 3, 0, &method, &password))
             return;
     }
     else
@@ -2279,23 +2280,23 @@ void explodeStdVLESS(std::string vless, Proxy &node) {
     if (uuid.empty() || port == "0") return;
 
     if (!addition.empty()) {
-        sni = urlDecode(getUrlArg(addition, "sni"));
+        sni = trim(urlDecode(getUrlArg(addition, "sni")));
         if (sni.empty()) {
-            sni = urlDecode(getUrlArg(addition, "peer"));
+            sni = trim(urlDecode(getUrlArg(addition, "peer")));
         }
-        net = getUrlArg(addition, "type");
+        net = toLower(trim(getUrlArg(addition, "type")));
         if (net.empty())
             net = "tcp";
         alpn = urlDecode(getUrlArg(addition, "alpn"));
         fingerprint = urlDecode(getUrlArg(addition, "hpkp"));
         client_fingerprint = urlDecode(getUrlArg(addition, "fp"));
         encryption = urlDecode(getUrlArg(addition, "encryption"));
-        flow = urlDecode(getUrlArg(addition, "flow"));
+        flow = trim(urlDecode(getUrlArg(addition, "flow")));
         xtls = getUrlArg(addition, "xtls");
-        public_key = urlDecode(getUrlArg(addition, "pbk"));
-        security = getUrlArg(addition, "security");
-        tls = getUrlArg(addition, "tls");
-        short_id = urlDecode(getUrlArg(addition, "sid"));
+        public_key = trim(urlDecode(replaceAllDistinct(getUrlArg(addition, "pbk"), "+", "%2B")));
+        security = toLower(trim(getUrlArg(addition, "security")));
+        tls = toLower(trim(getUrlArg(addition, "tls")));
+        short_id = trim(urlDecode(getUrlArg(addition, "sid")));
         tfo = tribool(getUrlArg(addition, "tfo"));
         std::string insecure_val = getUrlArg(addition, "insecure");
         if (insecure_val.empty())
@@ -2309,25 +2310,28 @@ void explodeStdVLESS(std::string vless, Proxy &node) {
             case "raw"_hash: // 兼容最新 Xray 标准将 tcp 命名为 raw
                 net = "tcp";
                 type = getUrlArg(addition, "headerType");
-                host = getUrlArg(addition, "host");
-                path = getUrlArg(addition, "path");
+                host = urlDecode(getUrlArg(addition, "host"));
+                path = urlDecode(getUrlArg(addition, "path"));
                 break;
             case "http"_hash:
             case "ws"_hash:
             case "h2"_hash:
+            case "httpupgrade"_hash:
+                if (net == "httpupgrade")
+                    net = "ws";
                 type = getUrlArg(addition, "headerType");
-                host = getUrlArg(addition, "host");
-                path = getUrlArg(addition, "path");
+                host = urlDecode(getUrlArg(addition, "host"));
+                path = urlDecode(getUrlArg(addition, "path"));
                 break;
             case "grpc"_hash:
-                path = getUrlArg(addition, "serviceName");
+                path = urlDecode(getUrlArg(addition, "serviceName"));
                 mode = getUrlArg(addition, "mode");
-                host = getUrlArg(addition, "authority"); // 读取 gRPC authority，用于导出 grpc-authority
+                host = urlDecode(getUrlArg(addition, "authority")); // 读取 gRPC authority，用于导出 grpc-authority
                 break;
             case "quic"_hash:
                 type = getUrlArg(addition, "headerType");
-                host = getUrlArg(addition, strFind(addition, "sni") ? "sni" : "quicSecurity");
-                path = getUrlArg(addition, "key");
+                host = urlDecode(getUrlArg(addition, strFind(addition, "sni") ? "sni" : "quicSecurity"));
+                path = urlDecode(getUrlArg(addition, "key"));
                 break;
             default:
                 return;
@@ -2343,9 +2347,11 @@ void explodeStdVLESS(std::string vless, Proxy &node) {
     if (remarks.empty())
         remarks = add + ":" + port;
     vlessConstruct(node, VLESS_DEFAULT_GROUP, remarks, add, port, uuid, sni, alpn, type, net, mode, host, path, fingerprint, flow, xtls, public_key, short_id, client_fingerprint, tribool(), tfo, scv, "");
+    if (getUrlArg(addition, "type") == "httpupgrade")
+        node.V2rayHttpUpgrade = true;
     if (security == "xtls" && flow.empty())
         node.Flow = "xtls-rprx-vision";
-    node.TLSSecure = (security == "tls" || security == "xtls" || security == "reality" || tls == "1" || tls == "true" || !public_key.empty());
+    node.TLSSecure = (security == "tls" || security == "xtls" || security == "reality" || tls == "1" || tls == "true" || tls == "tls" || !public_key.empty());
     if (!encryption.empty())
         node.VlessEncryption = encryption;
     if (!flow.empty())
